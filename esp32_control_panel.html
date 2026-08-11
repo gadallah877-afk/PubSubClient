@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>لوحة تحكم ESP32 - IoT</title>
+    <!-- استخدام Tailwind CSS للتصميم -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- استدعاء خطوط Google -->
+    <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700&display=swap" rel="stylesheet">
+    <!-- استدعاء مكتبة MQTT.js للاتصال بـ HiveMQ -->
+    <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+
+    <style>
+        body {
+            font-family: 'Cairo', sans-serif;
+            background-color: #0f172a;
+            color: #f8fafc;
+        }
+        .glass-panel {
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        .btn-hover {
+            transition: all 0.3s ease;
+        }
+        .btn-hover:active {
+            transform: scale(0.95);
+        }
+    </style>
+</head>
+<body class="min-h-screen flex items-center justify-center p-4">
+
+    <div class="glass-panel w-full max-w-md rounded-3xl p-8 shadow-2xl flex flex-col items-center">
+        
+        <!-- أيقونة ومقدمة -->
+        <div class="text-center mb-8">
+            <div class="w-20 h-20 bg-blue-500/20 rounded-full flex items-center justify-center mx-auto mb-4">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-10 w-10 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
+                </svg>
+            </div>
+            <h1 class="text-2xl font-bold text-white mb-2">تحكم في إضاءة ESP32</h1>
+            <p class="text-slate-400 text-sm">نظام إنترنت الأشياء باستخدام HiveMQ</p>
+        </div>
+
+        <!-- حالة الاتصال السيرفر -->
+        <div class="flex items-center space-x-2 space-x-reverse mb-8 bg-slate-800/50 px-4 py-2 rounded-full">
+            <div id="statusIndicator" class="w-3 h-3 rounded-full bg-red-500 shadow-[0_0_10px_rgba(239,68,68,0.6)]"></div>
+            <span id="statusText" class="text-sm font-semibold text-slate-300">جاري الاتصال بالخادم...</span>
+        </div>
+
+        <!-- أزرار التحكم -->
+        <div class="w-full flex space-x-4 space-x-reverse">
+            <!-- زر التشغيل -->
+            <button onclick="turnOnLED()" id="btnOn" disabled class="btn-hover flex-1 bg-green-500 hover:bg-green-600 disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold py-4 rounded-2xl shadow-[0_0_15px_rgba(34,197,94,0.4)] flex flex-col items-center justify-center gap-2">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-8 w-8" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+                </svg>
+                <span>تشغيل (ON)</span>
+            </button>
+
+            <!-- زر الإيقاف -->
+            <button onclick="turnOffLED()" id="btnOff" disabled class="btn-hover flex-1 bg-red-500 hover:bg-red-600 disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold py-4 rounded-2xl shadow-[0_0_15px_rgba(239,68,68,0.4)] flex flex-col items-center justify-center gap-2">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-8 w-8" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                <span>إطفاء (OFF)</span>
+            </button>
+        </div>
+        
+        <div class="mt-8 text-xs text-slate-500 text-center" id="infoText">
+            تأكد من توصيل ESP32 بالإنترنت واستخدام نفس اسم الـ Topic.
+        </div>
+    </div>
+
+    <script>
+        // إعدادات الاتصال بوسيط HiveMQ
+        const brokerUrl = 'wss://broker.hivemq.com:8884/mqtt';
+        const mqttTopic = 'eng_esp32_project/led_control_xyz123'; 
+        const clientId = 'web_client_' + Math.random().toString(16).substr(2, 8);
+
+        const statusIndicator = document.getElementById('statusIndicator');
+        const statusText = document.getElementById('statusText');
+        const btnOn = document.getElementById('btnOn');
+        const btnOff = document.getElementById('btnOff');
+        const infoText = document.getElementById('infoText');
+
+        let client = null;
+        let isSimulationMode = false;
+
+        const options = {
+            clientId: clientId,
+            clean: true,
+            connectTimeout: 4000,
+            reconnectPeriod: 1000,
+        };
+
+        try {
+            // فحص ما إذا كانت بيئة العرض (Canvas) تمنع الاتصال
+            const testSocket = new WebSocket(brokerUrl, 'mqtt');
+            testSocket.close(); // إذا لم يحدث خطأ، نغلق الاتصال التجريبي ونكمل
+            
+            // بدء الاتصال الفعلي بـ HiveMQ
+            client = mqtt.connect(brokerUrl, options);
+
+            client.on('connect', () => {
+                console.log('Connected to HiveMQ Broker!');
+                statusIndicator.classList.remove('bg-red-500', 'shadow-[0_0_10px_rgba(239,68,68,0.6)]');
+                statusIndicator.classList.add('bg-green-500', 'shadow-[0_0_10px_rgba(34,197,94,0.6)]');
+                statusText.textContent = 'متصل بخادم MQTT';
+                btnOn.disabled = false;
+                btnOff.disabled = false;
+            });
+
+            client.on('offline', () => {
+                statusIndicator.classList.remove('bg-green-500', 'shadow-[0_0_10px_rgba(34,197,94,0.6)]');
+                statusIndicator.classList.add('bg-red-500', 'shadow-[0_0_10px_rgba(239,68,68,0.6)]');
+                statusText.textContent = 'انقطع الاتصال، جاري إعادة المحاولة...';
+                btnOn.disabled = true;
+                btnOff.disabled = true;
+            });
+
+            client.on('error', (error) => {
+                console.error('MQTT Connection Error:', error);
+            });
+
+        } catch (error) {
+            console.warn("تم منع الاتصال بسبب قيود الحماية في بيئة العرض (Canvas). تم تفعيل وضع المحاكاة.");
+            isSimulationMode = true;
+            
+            statusIndicator.classList.remove('bg-red-500', 'shadow-[0_0_10px_rgba(239,68,68,0.6)]');
+            statusIndicator.classList.add('bg-yellow-500', 'shadow-[0_0_10px_rgba(234,179,8,0.6)]');
+            statusText.textContent = 'وضع المحاكاة (بيئة العرض)';
+            infoText.innerHTML = '<span class="text-yellow-500">ملاحظة:</span> أنت الآن في "وضع العرض" لأن هذه البيئة تمنع الاتصال الخارجي المباشر. <b>عند رفع الموقع على GitHub Pages سيعمل الكود بشكل حقيقي تماماً!</b>';
+            
+            // تفعيل الأزرار للمحاكاة
+            btnOn.disabled = false;
+            btnOff.disabled = false;
+        }
+
+        function turnOnLED() {
+            if (isSimulationMode) {
+                console.log('[وضع المحاكاة] تم إرسال الأمر: ON');
+                btnOn.classList.add('ring-4', 'ring-green-400', 'ring-opacity-50');
+                setTimeout(() => btnOn.classList.remove('ring-4', 'ring-green-400', 'ring-opacity-50'), 200);
+                return;
+            }
+
+            if (client && client.connected) {
+                client.publish(mqttTopic, 'ON');
+                console.log('Command sent: ON');
+                btnOn.classList.add('ring-4', 'ring-green-400', 'ring-opacity-50');
+                setTimeout(() => btnOn.classList.remove('ring-4', 'ring-green-400', 'ring-opacity-50'), 200);
+            }
+        }
+
+        function turnOffLED() {
+            if (isSimulationMode) {
+                console.log('[وضع المحاكاة] تم إرسال الأمر: OFF');
+                btnOff.classList.add('ring-4', 'ring-red-400', 'ring-opacity-50');
+                setTimeout(() => btnOff.classList.remove('ring-4', 'ring-red-400', 'ring-opacity-50'), 200);
+                return;
+            }
+
+            if (client && client.connected) {
+                client.publish(mqttTopic, 'OFF');
+                console.log('Command sent: OFF');
+                btnOff.classList.add('ring-4', 'ring-red-400', 'ring-opacity-50');
+                setTimeout(() => btnOff.classList.remove('ring-4', 'ring-red-400', 'ring-opacity-50'), 200);
+            }
+        }
+    </script>
+</body>
+</html>
